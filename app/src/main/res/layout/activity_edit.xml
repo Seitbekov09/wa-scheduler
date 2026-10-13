@@ -16,45 +16,58 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
-            <TextView
-                style="@style/Label"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="0dp"
-                android:text="Номер получателя" />
-
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <EditText
-                    android:id="@+id/etPhone"
+                <TextView
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="+7 701 123 45 67"
-                    android:inputType="phone" />
+                    android:text="Получатели"
+                    android:textColor="@color/text_main"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
 
                 <Button
-                    android:id="@+id/btnContact"
+                    android:id="@+id/btnPickWa"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Контакты" />
+                    android:backgroundTint="@color/accent"
+                    android:text="＋ Из WhatsApp"
+                    android:textColor="#FFFFFF" />
             </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/chipsBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/tvNoChats"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Нажмите «＋ Из WhatsApp» и выберите чат или группу в списке WhatsApp. Можно до 5 чатов."
+                android:textColor="@color/text_sub"
+                android:textSize="13sp" />
 
             <TextView
                 style="@style/Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Имя (для списка, необязательно)" />
+                android:text="…или номер телефона (если чата ещё нет)" />
 
             <EditText
-                android:id="@+id/etName"
+                android:id="@+id/etPhone"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textPersonName|textCapWords" />
+                android:hint="+7 701 123 45 67"
+                android:inputType="phone" />
 
             <TextView
                 style="@style/Label"

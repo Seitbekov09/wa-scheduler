@@ -46,8 +46,16 @@ object Sender {
     private var lockAfter = false
     private var wake: PowerManager.WakeLock? = null
 
+    private var chats: List<String> = emptyList()
+    private var chatIdx = 0
+
     fun isArmed() = current != 0 && phase == SEND && !clicked
     fun expectedSnippet() = expected
+    fun isShareMode() = chats.isNotEmpty()
+    fun nextChat(): String? = chats.getOrNull(chatIdx)
+    fun chatSelected() {
+        chatIdx++
+    }
 
     fun enqueue(c: Context, id: Int) {
         app = c.applicationContext
@@ -88,6 +96,8 @@ object Sender {
         clicked = false
         pinTries = 0
         lastPinAt = 0L
+        chats = m.chats
+        chatIdx = 0
         expected = m.text.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(15) ?: ""
         val mySeq = ++seq
 
@@ -107,6 +117,7 @@ object Sender {
                 finish(
                     false,
                     if (phase == UNLOCK) "Не отправлено: не удалось снять блокировку экрана"
+                    else if (chats.isNotEmpty() && chatIdx < chats.size) "Не отправлено: в WhatsApp не найден чат «${chats[chatIdx]}». Возможно, его переименовали"
                     else "Не отправлено: кнопка «Отправить» не появилась. Проверьте номер — он есть в WhatsApp?",
                 )
             }
@@ -157,6 +168,22 @@ object Sender {
     private fun openWhatsApp(svc: WaService) {
         val m = Store.get(app, current) ?: return finish(false, "Сообщение не найдено")
         val pkg = if (m.business) "com.whatsapp.w4b" else "com.whatsapp"
+        if (m.chats.isNotEmpty()) {
+            // Открываем список «Поделиться» WhatsApp с готовым текстом; чаты выберет служба.
+            try {
+                svc.startActivity(
+                    Intent(Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, m.text)
+                        .setPackage(pkg)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+                )
+                phase = SEND
+            } catch (_: ActivityNotFoundException) {
+                finish(false, if (m.business) "WhatsApp Business не установлен" else "WhatsApp не установлен")
+            }
+            return
+        }
         val query = "phone=${m.phone}&text=${Uri.encode(m.text)}"
         val uris = listOf("whatsapp://send?$query", "https://api.whatsapp.com/send?$query")
         for (u in uris) {
@@ -187,6 +214,7 @@ object Sender {
         if (id == 0) return
         current = 0
         phase = IDLE
+        chats = emptyList()
         seq++
         Store.get(app, id)?.let { report(it, ok, status) }
         WaService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)

@@ -17,8 +17,13 @@ data class Msg(
     var enabled: Boolean = true,
     var lastStatus: String = "",
     var lastAt: Long = 0L,
+    var chats: List<String> = emptyList(), // названия чатов/групп WhatsApp, выбранные в самом WhatsApp
 ) {
-    fun label(): String = name.ifBlank { "+$phone" }
+    fun label(): String = when {
+        chats.isNotEmpty() -> chats.joinToString(", ")
+        name.isNotBlank() -> name
+        else -> "+$phone"
+    }
 
     /** Следующее время отправки строго позже [after], или null для разового сообщения. */
     fun nextAfter(after: Long): Long? {
@@ -39,6 +44,7 @@ data class Msg(
         .put("id", id).put("phone", phone).put("name", name).put("text", text)
         .put("time", time).put("repeat", repeat).put("business", business)
         .put("enabled", enabled).put("lastStatus", lastStatus).put("lastAt", lastAt)
+        .put("chats", JSONArray(chats))
 
     companion object {
         const val ONCE = 0
@@ -64,6 +70,7 @@ data class Msg(
             enabled = o.optBoolean("enabled", true),
             lastStatus = o.optString("lastStatus"),
             lastAt = o.optLong("lastAt"),
+            chats = o.optJSONArray("chats")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList(),
         )
 
         /** Приводит номер к виду 77011234567. 8XXXXXXXXXX и 10-значные номера считаются казахстанскими/российскими (+7). */

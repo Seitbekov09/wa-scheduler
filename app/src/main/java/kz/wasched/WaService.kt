@@ -31,6 +31,25 @@ class WaService : AccessibilityService() {
         private val ENTER_LABELS = setOf("enter", "ввод", "ok", "ок", "готово", "подтвердить", "done", "войти")
         private val KEY_ID = Regex("""[:/](?:key|digit)_?([0-9])$""")
         private const val TAP_GAP_MS = 260L
+        private val SEARCH_LABELS = setOf("поиск", "search", "іздеу")
+
+        // ----- Выбор чата в WhatsApp -----
+        @Volatile private var capturing = false
+        @Volatile private var captureUntil = 0L
+        @Volatile private var captured: String? = null
+
+        fun startCapture() {
+            captured = null
+            capturing = true
+            captureUntil = SystemClock.uptimeMillis() + 3 * 60_000L
+        }
+
+        fun cancelCapture() {
+            capturing = false
+        }
+
+        /** Название чата, на который нажали в WhatsApp (один раз). */
+        fun takeCaptured(): String? = captured.also { captured = null }
     }
 
     private val h = Handler(Looper.getMainLooper())
@@ -54,9 +73,44 @@ class WaService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!Sender.isArmed()) return
         val pkg = event?.packageName?.toString() ?: return
-        if (pkg in PACKAGES) trySend()
+        if (pkg !in PACKAGES) return
+        if (capturing && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            onCaptureClick(event)
+            return
+        }
+        if (Sender.isArmed()) trySend()
+    }
+
+    private fun onCaptureClick(event: AccessibilityEvent) {
+        if (SystemClock.uptimeMillis() > captureUntil) {
+            capturing = false
+            return
+        }
+        val name = event.source?.let { firstText(it, 0) }
+            ?: event.text?.firstOrNull { !it.isNullOrBlank() }?.toString()?.trim()
+        if (name.isNullOrBlank()) return
+        capturing = false
+        captured = name
+        // Возвращаемся в редактор; CLEAR_TOP закрывает список WhatsApp поверх него.
+        startActivity(
+            Intent(this, EditActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            ),
+        )
+    }
+
+    /** Первый непустой текст в строке списка — это название чата. */
+    private fun firstText(n: AccessibilityNodeInfo, depth: Int): String? {
+        if (depth > 8) return null
+        val cls = n.className?.toString() ?: ""
+        if (!cls.contains("EditText")) {
+            n.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        for (i in 0 until n.childCount) {
+            n.getChild(i)?.let { c -> firstText(c, depth + 1)?.let { return it } }
+        }
+        return null
     }
 
     // ---------- Отправка в WhatsApp ----------
@@ -66,6 +120,10 @@ class WaService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: return
         if (pkg !in PACKAGES) return
+        if (Sender.isShareMode()) {
+            trySendShare(root, pkg)
+            return
+        }
 
         // Защита: нажимаем, только если в поле ввода именно наш текст.
         val entry = root.findAccessibilityNodeInfosByViewId("$pkg:id/entry").firstOrNull()
@@ -91,6 +149,71 @@ class WaService : AccessibilityService() {
                 ?.let { return it }
         }
         return null
+    }
+
+    // ---------- Отправка в выбранные чаты через список «Поделиться» WhatsApp ----------
+
+    private var lastShareAction = 0L
+
+    private fun trySendShare(root: AccessibilityNodeInfo, pkg: String) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastShareAction < 900) return
+        val nodes = ArrayList<AccessibilityNodeInfo>()
+        collect(root, nodes, 0)
+
+        val target = Sender.nextChat()
+        if (target != null) {
+            val row = nodes.firstOrNull { n ->
+                val cls = n.className?.toString() ?: ""
+                !cls.contains("EditText") && n.isVisibleToUser && n.text?.toString()?.trim() == target
+            }
+            if (row != null) {
+                var t: AccessibilityNodeInfo? = row
+                while (t != null && !t.isClickable) t = t.parent
+                if ((t ?: row).performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    lastShareAction = now
+                    Sender.chatSelected()
+                }
+                return
+            }
+            // Чата не видно — ищем через поиск WhatsApp.
+            val edit = nodes.firstOrNull { (it.className?.toString() ?: "").contains("EditText") && it.isVisibleToUser }
+            if (edit != null) {
+                if (edit.text?.toString() != target) {
+                    val args = android.os.Bundle().apply {
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, target)
+                    }
+                    edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    lastShareAction = now
+                }
+                return
+            }
+            val search = nodes.firstOrNull { n ->
+                val id = n.viewIdResourceName ?: ""
+                val d = n.contentDescription?.toString()?.trim()?.lowercase() ?: ""
+                n.isVisibleToUser && (id.endsWith("menuitem_search") || id.endsWith("/search") || d in SEARCH_LABELS)
+            }
+            if (search != null) {
+                var t: AccessibilityNodeInfo? = search
+                while (t != null && !t.isClickable) t = t.parent
+                (t ?: search).performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                lastShareAction = now
+            }
+            return
+        }
+
+        // Все чаты выбраны — нажимаем «Отправить».
+        val send = nodes.firstOrNull { n ->
+            val id = n.viewIdResourceName ?: ""
+            val d = (n.contentDescription ?: n.text)?.toString()?.trim() ?: ""
+            n.isVisibleToUser && (id == "$pkg:id/send" || SEND_LABELS.any { it.equals(d, ignoreCase = true) })
+        } ?: return
+        var t: AccessibilityNodeInfo? = send
+        while (t != null && !t.isClickable) t = t.parent
+        if ((t ?: send).performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            lastShareAction = now
+            Sender.onClicked()
+        }
     }
 
     // ---------- Ввод PIN на экране блокировки ----------
