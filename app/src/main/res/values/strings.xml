@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WA Планировщик</string>
+    <string name="a11y_label">WA Планировщик — автоотправка</string>
+    <string name="a11y_desc">Нажимает кнопку «Отправить» в WhatsApp, когда наступает время запланированного сообщения. Служба реагирует только на окна WhatsApp и только в момент отправки. Никакие данные никуда не передаются.</string>
+</resources>
