@@ -2,6 +2,8 @@ package kz.wasched
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.KeyguardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -12,7 +14,9 @@ import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
+import android.text.InputType
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ListView
 import android.widget.Switch
 import android.widget.TextView
@@ -28,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var btnAccess: Button
     private lateinit var btnBattery: Button
+    private lateinit var btnPin: Button
 
     private var items: List<Msg> = emptyList()
     private val fmt = SimpleDateFormat("d MMM, EE, HH:mm", Locale("ru"))
@@ -71,6 +76,8 @@ class MainActivity : Activity() {
         statusText = findViewById(R.id.statusText)
         btnAccess = findViewById(R.id.btnAccess)
         btnBattery = findViewById(R.id.btnBattery)
+        btnPin = findViewById(R.id.btnPin)
+        btnPin.setOnClickListener { pinDialog() }
 
         list.adapter = adapter
         list.setOnItemClickListener { _, _, pos, _ -> openEditor(items[pos].id) }
@@ -135,10 +142,13 @@ class MainActivity : Activity() {
         btnAccess.visibility = if (a11y) View.GONE else View.VISIBLE
         btnBattery.visibility = if (battery) View.GONE else View.VISIBLE
 
-        if (a11y && battery) {
+        val secure = getSystemService(KeyguardManager::class.java).isDeviceSecure
+        val pinOk = !secure || PinStore.has(this)
+        btnPin.text = if (PinStore.has(this)) "🔒 PIN экрана: задан (изменить)" else "🔒 Указать PIN экрана"
+
+        if (a11y && battery && pinOk) {
             statusCard.setBackgroundResource(R.drawable.card_ok)
-            statusText.text = "✅ Всё готово. Сообщения уйдут автоматически.\n" +
-                "Важно: на экране блокировки не должно быть PIN/пароля, иначе WhatsApp не откроется."
+            statusText.text = "✅ Всё готово. Сообщения уйдут автоматически, даже если телефон заблокирован."
         } else {
             statusCard.setBackgroundResource(R.drawable.card_warn)
             val sb = StringBuilder("Осталось настроить:\n")
@@ -148,9 +158,49 @@ class MainActivity : Activity() {
                     sb.append("  Если переключатель серый: Настройки → Приложения → WA Планировщик → ⋮ → «Разрешить ограниченные настройки».\n")
                 }
             }
-            if (!battery) sb.append("• Разрешите работу в фоне, чтобы система не усыпляла приложение.")
+            if (!battery) sb.append("• Разрешите работу в фоне, чтобы система не усыпляла приложение.\n")
+            if (!pinOk) sb.append("• На телефоне стоит пароль. Укажите PIN экрана — приложение введёт его само в момент отправки.")
             statusText.text = sb.toString().trimEnd()
         }
+    }
+
+    private fun pinDialog() {
+        val et = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = "PIN из цифр"
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = android.widget.FrameLayout(this).apply {
+            setPadding(pad, pad / 2, pad, 0)
+            addView(et)
+        }
+        val b = AlertDialog.Builder(this)
+            .setTitle("PIN экрана блокировки")
+            .setMessage(
+                "Приложение введёт этот PIN, чтобы разблокировать телефон в момент отправки, " +
+                    "а после отправки снова заблокирует экран.\n\n" +
+                    "Работает только с цифровым PIN (не с графическим ключом и не с паролем из букв). " +
+                    "PIN хранится только на этом телефоне в зашифрованном виде.",
+            )
+            .setView(box)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val pin = et.text.toString().trim()
+                if (pin.length < 4 || !pin.all { it.isDigit() }) {
+                    Toast.makeText(this, "PIN должен состоять минимум из 4 цифр", Toast.LENGTH_LONG).show()
+                } else {
+                    PinStore.save(this, pin)
+                    Toast.makeText(this, "PIN сохранён", Toast.LENGTH_SHORT).show()
+                }
+                refresh()
+            }
+            .setNegativeButton("Отмена", null)
+        if (PinStore.has(this)) {
+            b.setNeutralButton("Удалить") { _, _ ->
+                PinStore.clear(this)
+                refresh()
+            }
+        }
+        b.show()
     }
 
     private fun isServiceEnabled(): Boolean {
