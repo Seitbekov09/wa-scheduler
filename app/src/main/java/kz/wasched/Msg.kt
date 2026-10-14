@@ -17,6 +17,7 @@ data class Msg(
     var enabled: Boolean = true,
     var lastStatus: String = "",
     var lastAt: Long = 0L,
+    var pendingCatchUp: Boolean = false, // пропущено во время блокировки — дослать при разблокировке
     var chats: List<String> = emptyList(), // названия чатов/групп WhatsApp, выбранные в самом WhatsApp
 ) {
     fun label(): String = when {
@@ -44,6 +45,7 @@ data class Msg(
         .put("id", id).put("phone", phone).put("name", name).put("text", text)
         .put("time", time).put("repeat", repeat).put("business", business)
         .put("enabled", enabled).put("lastStatus", lastStatus).put("lastAt", lastAt)
+        .put("pendingCatchUp", pendingCatchUp)
         .put("chats", JSONArray(chats))
 
     companion object {
@@ -70,6 +72,7 @@ data class Msg(
             enabled = o.optBoolean("enabled", true),
             lastStatus = o.optString("lastStatus"),
             lastAt = o.optLong("lastAt"),
+            pendingCatchUp = o.optBoolean("pendingCatchUp"),
             chats = o.optJSONArray("chats")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList(),
         )
 

@@ -5,10 +5,15 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.UserManager
 
 /** Точные будильники через AlarmManager.setAlarmClock — срабатывают даже в режиме сна (Doze). */
 object Scheduler {
     private const val ACTION = "kz.wasched.FIRE"
+
+    /** Разблокирован ли телефон (после перезагрузки данные доступны только после первой разблокировки). */
+    fun isUnlocked(c: Context): Boolean =
+        c.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true
 
     private fun pending(c: Context, id: Int, flags: Int): PendingIntent? =
         PendingIntent.getBroadcast(
@@ -38,8 +43,12 @@ object Scheduler {
         pi.cancel()
     }
 
-    /** После перезагрузки/смены времени: заново ставим все будильники. */
-    fun rescheduleAll(c: Context) {
+    /**
+     * После перезагрузки/смены времени: заново ставим будильники и обрабатываем пропущенное.
+     * [canSendNow] = true, если экран уже разблокирован (можно слать сразу);
+     * иначе пропущенное помечается и уйдёт при первой разблокировке (sendPending).
+     */
+    fun rescheduleAll(c: Context, canSendNow: Boolean) {
         val now = System.currentTimeMillis()
         for (m in Store.all(c)) {
             if (!m.enabled) continue
@@ -47,22 +56,35 @@ object Scheduler {
                 schedule(c, m)
                 continue
             }
-            if (now - m.time < 15 * 60_000L) {
-                // Пропустили недавно (телефон перезагружался) — отправим через 15 секунд.
-                schedule(c, m, now + 15_000L)
-                continue
-            }
-            val next = m.nextAfter(now)
-            if (next == null) {
-                m.enabled = false
-                m.lastStatus = "Пропущено: телефон был выключен"
+            // Время уже прошло — телефон был выключен или заблокирован.
+            if (canSendNow) {
+                Sender.enqueue(c, m.id)
+            } else {
+                m.pendingCatchUp = true
+                m.lastStatus = "Ждёт разблокировки телефона"
                 m.lastAt = now
                 Store.save(c, m)
-            } else {
+            }
+            val next = m.nextAfter(now)
+            if (next != null) {
                 m.time = next
                 Store.save(c, m)
                 schedule(c, m)
+            } else if (canSendNow) {
+                m.enabled = false
+                Store.save(c, m)
             }
+        }
+    }
+
+    /** При первой разблокировке после перезагрузки: досылаем всё помеченное. */
+    fun sendPending(c: Context) {
+        for (m in Store.all(c)) {
+            if (!m.pendingCatchUp) continue
+            m.pendingCatchUp = false
+            if (m.nextAfter(System.currentTimeMillis()) == null) m.enabled = false
+            Store.save(c, m)
+            Sender.enqueue(c, m.id)
         }
     }
 }
@@ -77,6 +99,7 @@ class AlarmReceiver : BroadcastReceiver() {
         if (next != null) m.time = next else m.enabled = false
         Store.save(c, m)
         if (next != null) Scheduler.schedule(c, m)
+        // Экран может быть заблокирован — отправка сама снимет блокировку и введёт PIN.
         Sender.enqueue(c, id)
     }
 }
@@ -84,6 +107,13 @@ class AlarmReceiver : BroadcastReceiver() {
 /** Перезагрузка, обновление приложения, смена времени/часового пояса. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, intent: Intent) {
-        Scheduler.rescheduleAll(c)
+        Scheduler.rescheduleAll(c, canSendNow = Scheduler.isUnlocked(c))
+    }
+}
+
+/** Разблокировка экрана: досылаем сообщения, пропущенные пока телефон был заблокирован после перезагрузки. */
+class UnlockReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, intent: Intent) {
+        Scheduler.sendPending(c)
     }
 }
