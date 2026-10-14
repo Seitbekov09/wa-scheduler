@@ -155,6 +155,46 @@ class WaService : AccessibilityService() {
 
     private var lastShareAction = 0L
 
+    /** Убирает пробелы, невидимые символы и приводит к нижнему регистру — для устойчивого сравнения названий. */
+    private fun norm(s: String): String = buildString {
+        for (ch in s.trim()) {
+            if (ch == '️' || ch == '‍' || ch == '​' || ch == '‌' || ch == '﻿') continue
+            if (ch.isWhitespace()) continue
+            append(ch.lowercaseChar())
+        }
+    }
+
+    /** Оставляет только буквы и цифры (без эмодзи и знаков) — текстовая часть имени. */
+    private fun stripText(s: String): String = buildString {
+        for (ch in s) if (ch.isLetterOrDigit()) append(ch.lowercaseChar())
+    }
+
+    private val HEADERS = setOf(
+        "недавние чаты", "другие контакты", "часто общаетесь", "статус",
+        "recent chats", "other contacts", "frequently contacted", "status", "контакты",
+    )
+
+    /** Первая строка-контакт в результатах поиска: видимый текст ниже поля ввода, не заголовок раздела. */
+    private fun firstResultRow(nodes: List<AccessibilityNodeInfo>, editBottom: Int): AccessibilityNodeInfo? {
+        var best: AccessibilityNodeInfo? = null
+        var bestTop = Int.MAX_VALUE
+        for (n in nodes) {
+            val cls = n.className?.toString() ?: ""
+            if (cls.contains("EditText") || !n.isVisibleToUser) continue
+            val raw = n.text?.toString()?.trim() ?: continue
+            if (raw.isEmpty() || raw.lowercase() in HEADERS) continue
+            val r = Rect().also { n.getBoundsInScreen(it) }
+            if (r.top < editBottom || r.height() <= 0) continue
+            if (r.top < bestTop) {
+                bestTop = r.top
+                best = n
+            }
+        }
+        return best
+    }
+
+    private var scrollTries = 0
+
     private fun trySendShare(root: AccessibilityNodeInfo, pkg: String) {
         val now = SystemClock.uptimeMillis()
         if (now - lastShareAction < 900) return
@@ -163,11 +203,19 @@ class WaService : AccessibilityService() {
 
         val target = Sender.nextChat()
         if (target != null) {
+            val wantFull = norm(target)
+            val wantEmoji = stripText(target) // без эмодзи, чтобы сравнивать текстовую часть имени
             val row = nodes.firstOrNull { n ->
                 val cls = n.className?.toString() ?: ""
-                !cls.contains("EditText") && n.isVisibleToUser && n.text?.toString()?.trim() == target
+                if (cls.contains("EditText") || !n.isVisibleToUser) return@firstOrNull false
+                val raw = n.text?.toString() ?: return@firstOrNull false
+                val full = norm(raw)
+                full.isNotEmpty() && (full == wantFull ||
+                    (wantEmoji.length >= 2 && stripText(raw) == wantEmoji) ||
+                    (wantFull.length >= 3 && (full.startsWith(wantFull) || wantFull.startsWith(full))))
             }
             if (row != null) {
+                scrollTries = 0
                 var t: AccessibilityNodeInfo? = row
                 while (t != null && !t.isClickable) t = t.parent
                 if ((t ?: row).performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
@@ -176,17 +224,42 @@ class WaService : AccessibilityService() {
                 }
                 return
             }
-            // Чата не видно — ищем через поиск WhatsApp.
+            // Если открыт поиск — печатаем название, затем жмём на первый результат.
             val edit = nodes.firstOrNull { (it.className?.toString() ?: "").contains("EditText") && it.isVisibleToUser }
             if (edit != null) {
-                if (edit.text?.toString() != target) {
+                val typed = norm(edit.text?.toString() ?: "")
+                // Для имени печатаем текстовую часть без эмодзи — WhatsApp по эмодзи не ищет.
+                val queryText = target.filter { it.isLetterOrDigit() || it.isWhitespace() }.trim().ifEmpty { target }
+                if (typed != norm(queryText)) {
                     val args = android.os.Bundle().apply {
-                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, target)
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, queryText)
                     }
                     edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                     lastShareAction = now
+                    return
+                }
+                // Текст введён — нажимаем на первый контакт в результатах.
+                val editBottom = Rect().also { edit.getBoundsInScreen(it) }.bottom
+                val first = firstResultRow(nodes, editBottom)
+                if (first != null) {
+                    var t: AccessibilityNodeInfo? = first
+                    while (t != null && !t.isClickable) t = t.parent
+                    if ((t ?: first).performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        lastShareAction = now
+                        scrollTries = 0
+                        Sender.chatSelected()
+                    }
                 }
                 return
+            }
+            // Чата не видно — сначала прокручиваем список, потом открываем поиск.
+            if (scrollTries < 6) {
+                val scrollable = nodes.firstOrNull { it.isVisibleToUser && it.isScrollable }
+                if (scrollable != null && scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                    scrollTries++
+                    lastShareAction = now
+                    return
+                }
             }
             val search = nodes.firstOrNull { n ->
                 val id = n.viewIdResourceName ?: ""
