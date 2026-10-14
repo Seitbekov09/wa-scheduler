@@ -72,14 +72,27 @@ class WaService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    private var lastEventWork = 0L
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
         if (pkg !in PACKAGES) return
-        if (capturing && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            onCaptureClick(event)
-            return
+        try {
+            if (capturing && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+                onCaptureClick(event)
+                return
+            }
+            // Отправку в чаты по имени двигает только опрос из Sender — здесь не трогаем,
+            // чтобы шквал событий WhatsApp не перегружал службу (иначе Android её отключает).
+            if (Sender.isArmed() && !Sender.isShareMode()) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastEventWork < 300) return
+                lastEventWork = now
+                trySend()
+            }
+        } catch (_: Throwable) {
+            // Служба не должна падать из-за одной ошибки — иначе система её отключит.
         }
-        if (Sender.isArmed()) trySend()
     }
 
     private fun onCaptureClick(event: AccessibilityEvent) {
@@ -116,6 +129,13 @@ class WaService : AccessibilityService() {
     // ---------- Отправка в WhatsApp ----------
 
     fun trySend() {
+        try {
+            trySendInner()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun trySendInner() {
         if (!Sender.isArmed()) return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: return
@@ -298,6 +318,14 @@ class WaService : AccessibilityService() {
      * Если клавиатуры не видно — проводит пальцем вверх, чтобы она появилась.
      */
     fun tryUnlock(pin: String): Int {
+        return try {
+            tryUnlockInner(pin)
+        } catch (_: Throwable) {
+            PIN_NOTHING
+        }
+    }
+
+    private fun tryUnlockInner(pin: String): Int {
         if (isEnteringPin()) return PIN_NOTHING
         val dm = resources.displayMetrics
 
@@ -363,9 +391,17 @@ class WaService : AccessibilityService() {
     }
 
     private fun collect(n: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>, depth: Int) {
-        if (depth > 40 || out.size > 3000) return
+        if (depth > 25 || out.size > 900) return
         out.add(n)
-        for (i in 0 until n.childCount) n.getChild(i)?.let { collect(it, out, depth + 1) }
+        val count = n.childCount
+        for (i in 0 until count) {
+            val c = try {
+                n.getChild(i)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            collect(c, out, depth + 1)
+        }
     }
 
     private fun tap(x: Float, y: Float) {
